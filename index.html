@@ -601,11 +601,92 @@ function openDB(){
 }
 const tx=(s,m='readonly')=>db.transaction(s,m).objectStore(s);
 const all=s=>new Promise((res,rej)=>{const r=tx(s).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error);});
-const put=(s,v)=>new Promise((res,rej)=>{const r=tx(s,'readwrite').put(v);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});
-const add=(s,v)=>new Promise((res,rej)=>{const r=tx(s,'readwrite').add(v);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);});
-const del=(s,k)=>new Promise((res,rej)=>{const r=tx(s,'readwrite').delete(k);r.onsuccess=()=>res();r.onerror=()=>rej(r.error);});
+const put=(s,v)=>new Promise((res,rej)=>{
+  try{
+    const t=db.transaction(s,'readwrite');
+    const req=t.objectStore(s).put(v);
+    let resVal;
+    req.onsuccess=()=>{resVal=req.result;};
+    req.onerror=()=>rej(req.error);
+    t.oncomplete=()=>res(resVal);
+    t.onerror=()=>rej(t.error||req.error);
+    t.onabort=()=>rej(t.error||req.error);
+  }catch(err){rej(err);}
+});
+const add=(s,v)=>new Promise((res,rej)=>{
+  try{
+    const t=db.transaction(s,'readwrite');
+    const req=t.objectStore(s).add(v);
+    let resVal;
+    req.onsuccess=()=>{resVal=req.result;};
+    req.onerror=()=>rej(req.error);
+    t.oncomplete=()=>res(resVal);
+    t.onerror=()=>rej(t.error||req.error);
+    t.onabort=()=>rej(t.error||req.error);
+  }catch(err){rej(err);}
+});
+const del=(s,k)=>new Promise((res,rej)=>{
+  try{
+    const t=db.transaction(s,'readwrite');
+    const req=t.objectStore(s).delete(k);
+    req.onerror=()=>rej(req.error);
+    t.oncomplete=()=>res();
+    t.onerror=()=>rej(t.error||req.error);
+    t.onabort=()=>rej(t.error||req.error);
+  }catch(err){rej(err);}
+});
 
-async function loadAll(){const allSales=await all('sales');const allMkt=await all('mkt');const allProducts=await all('products');const allSett=await all('sett');const allReturns=await all('returns');State.users=await all('users');const s=await all('settings');State.settings={};s.forEach(x=>State.settings[x.key]=x.value);State.sales=ownedRecords(allSales);State.mkt=ownedRecords(allMkt);State.products=ownedRecords(allProducts);State.sett=ownedRecords(allSett);State.returns=ownedRecords(allReturns);State.notifications=ownedRecords(await all('notifications'));}
+async function loadAll(){
+  const stores=['sales','mkt','products','sett','returns','users','settings','notifications'];
+  try {
+    const t=db.transaction(stores,'readonly');
+    const promises=stores.map(st=>new Promise((res,rej)=>{
+      const req=t.objectStore(st).getAll();
+      req.onsuccess=()=>res(req.result||[]);
+      req.onerror=()=>rej(req.error);
+    }));
+    const [allSales,allMkt,allProducts,allSett,allReturns,allUsers,allSettings,allNotifs]=await Promise.all(promises);
+    State.users=allUsers||[];
+    State.settings={};
+    (allSettings||[]).forEach(x=>State.settings[x.key]=x.value);
+    State.sales=ownedRecords(allSales||[]);
+    State.mkt=ownedRecords(allMkt||[]);
+    State.products=ownedRecords(allProducts||[]);
+    State.sett=ownedRecords(allSett||[]);
+    State.returns=ownedRecords(allReturns||[]);
+    State.notifications=ownedRecords(allNotifs||[]);
+  } catch(e) {
+    const [allSales,allMkt,allProducts,allSett,allReturns,allUsers,allSettings,allNotifs]=await Promise.all([
+      all('sales'),all('mkt'),all('products'),all('sett'),all('returns'),all('users'),all('settings'),all('notifications')
+    ]);
+    State.users=allUsers||[];
+    State.settings={};
+    (allSettings||[]).forEach(x=>State.settings[x.key]=x.value);
+    State.sales=ownedRecords(allSales||[]);
+    State.mkt=ownedRecords(allMkt||[]);
+    State.products=ownedRecords(allProducts||[]);
+    State.sett=ownedRecords(allSett||[]);
+    State.returns=ownedRecords(allReturns||[]);
+    State.notifications=ownedRecords(allNotifs||[]);
+  }
+}
+function refreshCurrentView(){
+  const p=State.page;
+  if(p==='dashboard')drawDash();
+  else if(p==='all')drawAllSales();
+  else if(p==='sett')drawSett();
+  else if(p==='mkt')drawMkt();
+  else if(p==='products')renderProducts();
+  else if(p==='returns')renderReturns();
+  else if(p==='weekly')drawWeekly();
+  else if(p==='monthly')drawMonthly();
+  else if(p==='yearly')drawYearly();
+  else if(p==='mktperf')drawMktPerf();
+}
+async function syncDataAndViews(){
+  await loadAll();
+  refreshCurrentView();
+}
 async function saveSetting(k,v){State.settings[k]=v;await put('settings',{key:k,value:v});}
 async function audit(a,d){try{await add('audit',{ts:Date.now(),u:State.user?.username||'system',a,d:JSON.stringify(d)});}catch(e){}}
 
@@ -1944,10 +2025,188 @@ function updCalc(){const r={qty:+$('s_qty')?.value||0,price:+$('s_price')?.value
 
 let salesPage=1,salesSort={col:'saleDate',dir:'desc'};
 function renderAllSales(){$('view').innerHTML=`<div class="card"><div class="grid grid-4" style="align-items:end"><div><label>Search</label><input class="input" id="as_search" placeholder="Order, SKU..." value="${State.filters.search||''}"></div><div><label>From</label><input type="date" class="input" id="as_from" value="${State.filters.from||''}"></div><div><label>To</label><input type="date" class="input" id="as_to" value="${State.filters.to||''}"></div><div><label>Marketplace</label><select class="input" id="as_mkt"><option value="">All</option>${State.mkt.map(m=>`<option value="${m.id}" ${State.filters.mkt==m.id?'selected':''}>${esc(m.name)}</option>`).join('')}</select></div></div><div style="margin-top:8px;display:flex;gap:4px;flex-wrap:wrap"><button class="btn btn-primary" onclick="State.filters.search=$('as_search').value;State.filters.from=$('as_from').value;State.filters.to=$('as_to').value;State.filters.mkt=$('as_mkt').value;salesPage=1;drawAllSales()">Apply</button><button class="btn" onclick="State.filters={};salesPage=1;renderAllSales()">Clear Filters</button><button class="btn" onclick="exportSales()">⬇ Export</button><button class="btn btn-primary" onclick="go('sales')">+ New Sale</button></div></div><div id="as_summary" class="kpi-grid" style="margin-bottom:10px"></div><div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:8px"><b id="as_count">0</b> records</div><div class="table-wrap"><table class="data" id="as_table"></table></div><div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center"><div class="muted" style="font-size:12px">Page <span id="as_page">1</span>/<span id="as_pages">1</span></div><div style="display:flex;gap:4px"><button class="btn btn-sm" onclick="salesPage=Math.max(1,salesPage-1);drawAllSales()">← Prev</button><button class="btn btn-sm" onclick="salesPage++;drawAllSales()">Next →</button></div></div></div>`;drawAllSales();}
-function drawAllSales(){const rows=filteredSales();$('as_count').textContent=rows.length;const sumEl=$('as_summary');if(sumEl){const agg=aggregateWithReturns(rows,[]);sumEl.innerHTML=`<div class="kpi"><div class="kpi-label">Filtered Sales</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(agg.gross)}</div></div><div class="kpi"><div class="kpi-label">Marketplace Fees</div><div class="kpi-value warn">${fmt(agg.fees)}</div></div><div class="kpi"><div class="kpi-label">Withdrawal Amount</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(agg.wd)}</div></div><div class="kpi"><div class="kpi-label">Net Profit</div><div class="kpi-value ${agg.profit>=0?'success':'danger'}">${fmt(agg.profit)}</div></div><div class="kpi"><div class="kpi-label">Total Orders</div><div class="kpi-value">${agg.orders}</div></div><div class="kpi"><div class="kpi-label">Quantity Sold</div><div class="kpi-value">${agg.qty}</div></div>`;}const pp=25,pages=Math.max(1,Math.ceil(rows.length/pp));if(salesPage>pages)salesPage=pages;$('as_page').textContent=salesPage;$('as_pages').textContent=pages;const sorted=rows.slice().sort((a,b)=>{const c=salesSort.col;let va=a[c],vb=b[c];if(c==='saleDate'){va=typeof va==='string'&&va.length>=10&&va.charCodeAt(4)===45&&va.charCodeAt(7)===45?va.slice(0,10):(fmtDate(va)||'');vb=typeof vb==='string'&&vb.length>=10&&vb.charCodeAt(4)===45&&vb.charCodeAt(7)===45?vb.slice(0,10):(fmtDate(vb)||'');}if(typeof va==='string')va=va.toLowerCase();if(typeof vb==='string')vb=vb.toLowerCase();if(va<vb)return salesSort.dir==='asc'?-1:1;if(va>vb)return salesSort.dir==='asc'?1:-1;return 0;});const slice=sorted.slice((salesPage-1)*pp,salesPage*pp);const cols=[['saleDate','Date'],['mktId','Marketplace'],['orderNum','Order'],['sku','SKU'],['product','Product'],['qty','Qty'],['gross','Sales'],['fees','Fees'],['wd','W/D'],['tc','Cost'],['profit','Profit'],['orderStatus','Status']];$('as_table').innerHTML=`<thead><tr>${cols.map(([k,l])=>`<th style="cursor:pointer" data-col="${k}">${l} ${salesSort.col===k?(salesSort.dir==='asc'?'▲':'▼'):''}</th>`).join('')}<th>Actions</th></tr></thead><tbody>${slice.length?slice.map(r=>{const m=State.mkt.find(x=>x.id==r.mktId);return `<tr><td class="nowrap">${esc(fmtDate(r.saleDate))}</td><td>${mktBadge(m)}</td><td>${esc(r.orderNum||'')}</td><td>${esc(r.sku||'')}</td><td>${esc((r.product||'').slice(0,26))}</td><td>${r.qty||0}</td><td>${fmt(r.gross)}</td><td>${fmt(r.fees)}</td><td>${fmt(r.wd)}</td><td>${fmt(r.tc)}</td><td class="${r.profit>=0?'success':'danger'}"><b>${fmt(r.profit)}</b></td><td>${statusPill(r.orderStatus)}</td><td><div class="row-actions"><button class="btn btn-sm" onclick="viewSale(${r.id})">View</button><button class="btn btn-sm" onclick="editSale(${r.id})">Edit</button><button class="btn btn-danger btn-sm" onclick="delSale(${r.id})">✕</button></div></td></tr>`;}).join(''):'<tr><td colspan="13" class="muted" style="text-align:center;padding:16px">No records.</td></tr>'}</tbody>`;$('as_table').querySelectorAll('th[data-col]').forEach(th=>th.onclick=()=>{const c=th.dataset.col;if(salesSort.col===c)salesSort.dir=salesSort.dir==='asc'?'desc':'asc';else{salesSort.col=c;salesSort.dir='asc';}drawAllSales();});}
-function viewSale(id){const r=State.sales.find(x=>x.id===id);if(!r)return;const m=State.mkt.find(x=>x.id==r.mktId);openModal(`<div style="display:flex;justify-content:space-between;margin-bottom:10px"><h3 style="margin:0;color:var(--user-accent, var(--primary))">Sale #${r.id}</h3><button class="btn" onclick="closeModal()">Close</button></div><div class="grid grid-2"><div><div class="muted" style="font-size:10px">Marketplace</div><div>${mktBadge(m)}</div><div class="muted" style="font-size:10px;margin-top:6px">Date</div><div>${esc(fmtDate(r.saleDate))}</div><div class="muted" style="font-size:10px;margin-top:6px">Order</div><div>${esc(r.orderNum||'')}</div><div class="muted" style="font-size:10px;margin-top:6px">Product</div><div>${esc(r.product||'')}</div><div class="muted" style="font-size:10px;margin-top:6px">Qty</div><div>${r.qty||0}</div><div class="muted" style="font-size:10px;margin-top:6px">Status</div><div>${statusPill(r.orderStatus)} ${statusPill(r.payStatus)}</div></div><div style="background:var(--panel2);border:1px dashed var(--border);border-radius:7px;padding:8px;font-family:monospace;font-size:11px"><div>Gross: ${fmt(r.gross)}</div><div>Fees: −${fmt(r.fees)}</div><div>W/D: <b style="color:var(--user-accent, var(--primary))">${fmt(r.wd)}</b></div><div>Cost: −${fmt(r.tc)}</div><div class="divider"></div><div>Profit: <b class="${r.profit>=0?'success':'danger'}">${fmt(r.profit)}</b></div><div>Margin: ${num(r.margin).toFixed(2)}%</div></div></div>`);}
-async function delSale(id){if(!confirm('Delete this sale?'))return;await del('sales',id);await audit('DELETE_SALE',{id});await loadAll();drawAllSales();toast('Deleted','success');}
-function editSale(id){const r=State.sales.find(x=>x.id===id);if(!r)return;const mopts=State.mkt.map(m=>`<option value="${m.id}" ${m.id==r.mktId?'selected':''}>${esc(m.name)}</option>`).join('');const curStatus=r.orderStatus||'Delivered';const statusOptions=['Delivered','Pending','Returned','Holding'];const sopts=statusOptions.map(s=>`<option value="${s}" ${(curStatus===s||(curStatus==='On Hold'&&s==='Holding'))?'selected':''}>${s}</option>`).join('');openModal(`<div style="display:flex;justify-content:space-between;margin-bottom:10px"><h3 style="margin:0;color:var(--user-accent, var(--primary))">Edit #${r.id}</h3><button class="btn" onclick="closeModal()">Close</button></div><form id="ef"><div class="grid grid-3"><div><label>Date</label><input type="date" class="input" id="e_date" value="${esc(r.saleDate)}"></div><div><label>Marketplace</label><select class="input" id="e_mkt">${mopts}</select></div><div><label>Status</label><select class="input" id="e_os">${sopts}</select></div><div><label>Order</label><input class="input" id="e_order" value="${esc(r.orderNum)}"></div><div><label>Product</label><input class="input" id="e_prod" value="${esc(r.product)}"></div><div><label>Qty</label><input type="number" class="input" id="e_qty" value="${r.qty}"></div><div><label>Price</label><input type="number" step="0.01" class="input" id="e_price" value="${r.price}"></div><div><label>Cost</label><input type="number" step="0.01" class="input" id="e_pcost" value="${r.pcost}"></div><div><label>Ref Fee</label><input type="number" step="0.01" class="input" id="e_ref" value="${r.refFee||0}"></div><div><label>Ship Fee</label><input type="number" step="0.01" class="input" id="e_ship" value="${r.shipFee||0}"></div><div><label>Out Fee</label><input type="number" step="0.01" class="input" id="e_out" value="${r.outFee||0}"></div><div><label>Other</label><input type="number" step="0.01" class="input" id="e_oth" value="${r.othFee||0}"></div><div><label>Refund</label><input type="number" step="0.01" class="input" id="e_refund" value="${r.refund||0}"></div></div><div style="margin-top:10px;display:flex;gap:4px;justify-content:flex-end"><button class="btn" type="button" onclick="closeModal()">Cancel</button><button class="btn btn-primary" type="submit">Save</button></div></form>`);$('ef').onsubmit=async e=>{e.preventDefault();const upd={...r,saleDate:$('e_date').value,mktId:+$('e_mkt').value,orderStatus:$('e_os').value,orderNum:$('e_order').value,product:$('e_prod').value,qty:+$('e_qty').value,price:+$('e_price').value,pcost:+$('e_pcost').value,refFee:+$('e_ref').value,shipFee:+$('e_ship').value,outFee:+$('e_out').value,othFee:+$('e_oth').value,refund:+$('e_refund').value,updatedAt:Date.now()};Object.assign(upd,calcSale(upd));await put('sales',upd);await audit('UPDATE_SALE',{id,status:$('e_os').value});await loadAll();closeModal();drawAllSales();toast('Updated','success');};}
+function drawAllSales(){
+  const rows=filteredSales();
+  $('as_count').textContent=rows.length;
+  const sumEl=$('as_summary');
+  if(sumEl){
+    const agg=aggregateWithReturns(rows,[]);
+    sumEl.innerHTML=`<div class="kpi"><div class="kpi-label">Filtered Sales</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(agg.gross)}</div></div><div class="kpi"><div class="kpi-label">Marketplace Fees</div><div class="kpi-value warn">${fmt(agg.fees)}</div></div><div class="kpi"><div class="kpi-label">Withdrawal Amount</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(agg.wd)}</div></div><div class="kpi"><div class="kpi-label">Net Profit</div><div class="kpi-value ${agg.profit>=0?'success':'danger'}">${fmt(agg.profit)}</div></div><div class="kpi"><div class="kpi-label">Total Orders</div><div class="kpi-value">${agg.orders}</div></div><div class="kpi"><div class="kpi-label">Quantity Sold</div><div class="kpi-value">${agg.qty}</div></div>`;
+  }
+  const pp=25,pages=Math.max(1,Math.ceil(rows.length/pp));
+  if(salesPage>pages)salesPage=pages;
+  $('as_page').textContent=salesPage;
+  $('as_pages').textContent=pages;
+  const sorted=rows.slice().sort((a,b)=>{
+    const c=salesSort.col;
+    let va=a[c],vb=b[c];
+    if(c==='saleDate'){
+      va=typeof va==='string'&&va.length>=10&&va.charCodeAt(4)===45&&va.charCodeAt(7)===45?va.slice(0,10):(fmtDate(va)||'');
+      vb=typeof vb==='string'&&vb.length>=10&&vb.charCodeAt(4)===45&&vb.charCodeAt(7)===45?vb.slice(0,10):(fmtDate(vb)||'');
+    }
+    if(typeof va==='string')va=va.toLowerCase();
+    if(typeof vb==='string')vb=vb.toLowerCase();
+    if(va<vb)return salesSort.dir==='asc'?-1:1;
+    if(va>vb)return salesSort.dir==='asc'?1:-1;
+    return 0;
+  });
+  const slice=sorted.slice((salesPage-1)*pp,salesPage*pp);
+  const cols=[['saleDate','Date'],['mktId','Marketplace'],['orderNum','Order'],['sku','SKU'],['product','Product'],['qty','Qty'],['gross','Sales'],['fees','Fees'],['wd','W/D'],['tc','Cost'],['profit','Profit'],['orderStatus','Status']];
+  $('as_table').innerHTML=`<thead><tr>${cols.map(([k,l])=>`<th style="cursor:pointer" data-col="${k}">${l} ${salesSort.col===k?(salesSort.dir==='asc'?'▲':'▼'):''}</th>`).join('')}<th>Actions</th></tr></thead><tbody>${slice.length?slice.map(r=>{
+    const m=State.mkt.find(x=>String(x.id)==String(r.mktId));
+    return `<tr><td class="nowrap">${esc(fmtDate(r.saleDate))}</td><td>${mktBadge(m)}</td><td>${esc(r.orderNum||'')}</td><td>${esc(r.sku||'')}</td><td>${esc((r.product||'').slice(0,26))}</td><td>${r.qty||0}</td><td>${fmt(r.gross)}</td><td>${fmt(r.fees)}</td><td>${fmt(r.wd)}</td><td>${fmt(r.tc)}</td><td class="${r.profit>=0?'success':'danger'}"><b>${fmt(r.profit)}</b></td><td>${statusPill(r.orderStatus)}</td><td><div class="row-actions"><button class="btn btn-sm" onclick="viewSale('${esc(r.id)}')">View</button><button class="btn btn-sm" onclick="editSale('${esc(r.id)}')">Edit</button><button class="btn btn-danger btn-sm" onclick="delSale('${esc(r.id)}')">✕</button></div></td></tr>`;
+  }).join(''):'<tr><td colspan="13" class="muted" style="text-align:center;padding:16px">No records.</td></tr>'}</tbody>`;
+  $('as_table').querySelectorAll('th[data-col]').forEach(th=>th.onclick=()=>{
+    const c=th.dataset.col;
+    if(salesSort.col===c)salesSort.dir=salesSort.dir==='asc'?'desc':'asc';
+    else{salesSort.col=c;salesSort.dir='asc';}
+    drawAllSales();
+  });
+}
+function viewSale(id){
+  const r=State.sales.find(x=>x.id===id||String(x.id)===String(id));
+  if(!r){toast('Record not found','error');return;}
+  const m=State.mkt.find(x=>String(x.id)==String(r.mktId));
+  openModal(`<div style="display:flex;justify-content:space-between;margin-bottom:10px"><h3 style="margin:0;color:var(--user-accent, var(--primary))">Sale #${esc(r.id)}</h3><button class="btn" onclick="closeModal()">Close</button></div><div class="grid grid-2"><div><div class="muted" style="font-size:10px">Marketplace</div><div>${mktBadge(m)}</div><div class="muted" style="font-size:10px;margin-top:6px">Date</div><div>${esc(fmtDate(r.saleDate))}</div><div class="muted" style="font-size:10px;margin-top:6px">Order</div><div>${esc(r.orderNum||'')}</div><div class="muted" style="font-size:10px;margin-top:6px">Product</div><div>${esc(r.product||'')}</div><div class="muted" style="font-size:10px;margin-top:6px">Qty</div><div>${r.qty||0}</div><div class="muted" style="font-size:10px;margin-top:6px">Status</div><div>${statusPill(r.orderStatus)} ${statusPill(r.payStatus)}</div></div><div style="background:var(--panel2);border:1px dashed var(--border);border-radius:7px;padding:8px;font-family:monospace;font-size:11px"><div>Gross: ${fmt(r.gross)}</div><div>Fees: −${fmt(r.fees)}</div><div>W/D: <b style="color:var(--user-accent, var(--primary))">${fmt(r.wd)}</b></div><div>Cost: −${fmt(r.tc)}</div><div class="divider"></div><div>Profit: <b class="${r.profit>=0?'success':'danger'}">${fmt(r.profit)}</b></div><div>Margin: ${num(r.margin).toFixed(2)}%</div></div></div>`);
+}
+async function delSale(id){
+  if(!confirm('Delete this sale?'))return;
+  const r=State.sales.find(x=>x.id===id||String(x.id)===String(id));
+  const sId=r?r.id:((typeof id==='number')?id:(Number(id)||id));
+  await del('sales',sId);
+  await audit('DELETE_SALE',{id:sId});
+  await loadAll();
+  drawAllSales();
+  refreshCurrentView();
+  toast('Deleted','success');
+}
+function editSale(id){
+  const r=State.sales.find(x=>x.id===id||String(x.id)===String(id));
+  if(!r){toast('Sale record not found','error');return;}
+  const mopts=State.mkt.map(m=>`<option value="${m.id}" ${String(m.id)===String(r.mktId)?'selected':''}>${esc(m.name)}</option>`).join('');
+  const curStatus=r.orderStatus||'Delivered';
+  const statusOptions=State.settings.orderStatuses||['Pending','Confirmed','Shipped','Delivered','Cancelled','Returned','Refunded','On Hold'];
+  if(!statusOptions.includes(curStatus)) statusOptions.push(curStatus);
+  const sopts=statusOptions.map(s=>`<option value="${s}" ${curStatus===s?'selected':''}>${s}</option>`).join('');
+  const saleDateVal=fmtDate(r.saleDate)||today();
+  const orderVal=esc(r.orderNum||r.orderNumber||'');
+  const prodVal=esc(r.product||r.productName||'');
+  const qtyVal=r.qty!==undefined?r.qty:1;
+  const priceVal=r.price!==undefined?r.price:(r.sellingPrice||0);
+  const costVal=r.pcost!==undefined?r.pcost:(r.cost||0);
+  const refFeeVal=r.referralFee!==undefined?r.referralFee:(r.refFee||0);
+  const shipFeeVal=r.shippingFee!==undefined?r.shippingFee:(r.shipFee||0);
+  const outFeeVal=r.directshipFee!==undefined?r.directshipFee:(r.outboundFee!==undefined?r.outboundFee:(r.outFee||0));
+  const othFeeVal=r.otherFees!==undefined?r.otherFees:(r.othFee||0);
+  const refundVal=r.refund||0;
+
+  openModal(`<div style="display:flex;justify-content:space-between;margin-bottom:10px">
+    <h3 style="margin:0;color:var(--user-accent, var(--primary))">Edit Sale #${esc(r.id)}</h3>
+    <button class="btn" onclick="closeModal()">Close</button>
+  </div>
+  <div id="editSaleErr" style="min-height:0;font-size:12px;margin-bottom:8px"></div>
+  <form id="ef">
+    <div class="grid grid-3">
+      <div><label>Date *</label><input type="date" class="input" id="e_date" value="${saleDateVal}" required></div>
+      <div><label>Marketplace *</label><select class="input" id="e_mkt" required>${mopts}</select></div>
+      <div><label>Status *</label><select class="input" id="e_os" required>${sopts}</select></div>
+      <div><label>Order *</label><input class="input" id="e_order" value="${orderVal}" required></div>
+      <div><label>Product *</label><input class="input" id="e_prod" value="${prodVal}" required></div>
+      <div><label>Qty *</label><input type="number" class="input" id="e_qty" value="${qtyVal}" min="0" step="1" required></div>
+      <div><label>Price *</label><input type="number" step="0.01" class="input" id="e_price" value="${priceVal}" required></div>
+      <div><label>Cost *</label><input type="number" step="0.01" class="input" id="e_pcost" value="${costVal}" required></div>
+      <div><label>Ref Fee</label><input type="number" step="0.01" class="input" id="e_ref" value="${refFeeVal}"></div>
+      <div><label>Ship Fee</label><input type="number" step="0.01" class="input" id="e_ship" value="${shipFeeVal}"></div>
+      <div><label>Out Fee</label><input type="number" step="0.01" class="input" id="e_out" value="${outFeeVal}"></div>
+      <div><label>Other</label><input type="number" step="0.01" class="input" id="e_oth" value="${othFeeVal}"></div>
+      <div><label>Refund</label><input type="number" step="0.01" class="input" id="e_refund" value="${refundVal}"></div>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:4px;justify-content:flex-end">
+      <button class="btn" type="button" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" type="submit" id="e_saveBtn">💾 Save Changes</button>
+    </div>
+  </form>`);
+
+  $('ef').onsubmit=async e=>{
+    e.preventDefault();
+    if(State.saving)return;
+    State.saving=true;
+    const saveBtn=$('e_saveBtn');
+    btnLoading(saveBtn,true);
+    const errEl=$('editSaleErr');
+    if(errEl)errEl.innerHTML='';
+
+    const sDate=$('e_date').value;
+    const mktId=+$('e_mkt').value;
+    const sStatus=$('e_os').value;
+    const orderNum=$('e_order').value.trim();
+    const product=$('e_prod').value.trim();
+    const qty=Math.max(0, +$('e_qty').value||0);
+    const price=+$('e_price').value||0;
+    const pcost=+$('e_pcost').value||0;
+    const refFee=+$('e_ref').value||0;
+    const shipFee=+$('e_ship').value||0;
+    const outFee=+$('e_out').value||0;
+    const othFee=+$('e_oth').value||0;
+    const refund=+$('e_refund').value||0;
+
+    if(!sDate||!mktId||!orderNum||!product){
+      if(errEl)errEl.innerHTML='<div class="alert alert-error">Please fill all required fields (Date, Marketplace, Order, Product).</div>';
+      toast('Please fill required fields','error');
+      btnLoading(saveBtn,false);
+      State.saving=false;
+      return;
+    }
+
+    const upd={
+      ...r,
+      id:r.id,
+      saleDate:sDate,
+      mktId:mktId,
+      orderStatus:sStatus,
+      orderNum:orderNum,
+      orderNumber:orderNum,
+      product:product,
+      productName:product,
+      qty:qty,
+      price:price,
+      sellingPrice:price,
+      pcost:pcost,
+      cost:pcost,
+      refFee:refFee,
+      referralFee:refFee,
+      shipFee:shipFee,
+      shippingFee:shipFee,
+      outFee:outFee,
+      directshipFee:outFee,
+      outboundFee:outFee,
+      othFee:othFee,
+      otherFees:othFee,
+      refund:refund,
+      updatedAt:Date.now()
+    };
+    Object.assign(upd,calcSale(upd));
+
+    try{
+      await put('sales',upd);
+      const idx=State.sales.findIndex(x=>x.id===r.id||String(x.id)===String(r.id));
+      if(idx!==-1)State.sales[idx]=upd;
+      await audit('UPDATE_SALE',{id:r.id,orderNum:upd.orderNum,status:sStatus});
+      await loadAll();
+      closeModal();
+      drawAllSales();
+      refreshCurrentView();
+      toast('✓ Sale #'+r.id+' updated successfully','success');
+    }catch(err){
+      console.error(err);
+      if(errEl)errEl.innerHTML='<div class="alert alert-error">Failed to save changes: '+(err.message||err)+'</div>';
+      toast('Failed to update sale: '+(err.message||err),'error');
+    }finally{
+      btnLoading(saveBtn,false);
+      State.saving=false;
+    }
+  };
+}
 function exportSales(){const rows=filteredSales().map(s=>{const m=State.mkt.find(x=>x.id==s.mktId);return{Date:fmtDate(s.saleDate),Marketplace:m?.name||'',SKU:s.sku||'',Order:s.orderNum||'',Product:s.product||'',Qty:s.qty,Price:s.price,Cost:s.pcost,Fees:s.fees,Withdrawal:s.wd,Profit:s.profit,Status:s.orderStatus};});const ws=XLSX.utils.json_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Sales');XLSX.writeFile(wb,`sales-${Date.now()}.xlsx`);toast('Exported','success');}
 
 function renderReturns(){$('view').innerHTML=`<div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:6px"><h3 style="margin:0">Product Returns</h3><div style="display:flex;gap:4px"><button class="btn" onclick="exportReturns()">⬇ Export</button><button class="btn btn-primary" onclick="openReturnForm(null)">+ New Return</button></div></div><div class="alert alert-info"><b>How returns work:</b> Returns are linked to original sales. Net Sales = Gross Sales − Returns. Return service fees are deducted from profit. Original sale records are preserved for audit.</div><div class="kpi-grid" id="returnKpis"></div><div class="grid grid-2" style="margin-top:10px"><div><label>Marketplace Filter</label><select class="input" id="ret_mkt_filter" onchange="drawReturns()"><option value="">All</option>${State.mkt.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div><div><label>Status Filter</label><select class="input" id="ret_status_filter" onchange="drawReturns()"><option value="">All</option>${(State.settings.returnStatuses||[]).map(s=>`<option value="${s}">${s}</option>`).join('')}</select></div></div></div><div class="card"><h3>Return History</h3><div class="table-wrap"><table class="data" id="ret_table"></table></div></div><div class="card"><h3>Returns by Marketplace</h3><div class="table-wrap"><table class="data" id="ret_mkt_table"></table></div></div>`;drawReturns();}
@@ -2031,22 +2290,46 @@ function editSett(id){const s=id?State.sett.find(x=>x.id===id):{mktId:'',ref:'',
       else if(act>0 && act<exp) $('st_status').value='Partially Settled';
     }
   };
-  $('st_mkt').onchange=()=>{const mid=+$('st_mkt').value;const m=State.mkt.find(x=>x.id==mid);const store=$('st_store');if(m&&!store.value)store.value=m.storeCode||'';const f=mid?marketplaceFinancials(mid):null;const info=$('settBalanceInfo');if(f&&info){info.style.display='';info.innerHTML=`<b>Selected Marketplace Balance:</b><br>W/D Balance: <b>${fmt(f.withdrawalBalance)}</b> · Withdrawn: <b class="success">${fmt(f.totalWithdrawn)}</b> · Available: <b class="warn">${fmt(f.available)}</b>`;}else if(info)info.style.display='none';};$('sf2').onsubmit=async e=>{e.preventDefault();if(State.saving)return;State.saving=true;const errEl=$('settErr');errEl.innerHTML='';const saveBtn=$('st_save');btnLoading(saveBtn,true);const marketplaceId=+$('st_mkt').value,ref=$('st_ref').value.trim(),withdrawalDate=$('st_date').value;const expectedRaw=$('st_exp').value,actualRaw=$('st_act').value,status=$('st_status').value;const errors=[];if(!marketplaceId)errors.push('Marketplace required');if(!ref)errors.push('Reference required');if(!withdrawalDate)errors.push('Date required');const expectedAmount=Number(expectedRaw),actualAmount=actualRaw===''?0:Number(actualRaw);if(expectedRaw===''||!Number.isFinite(expectedAmount)||expectedAmount<0)errors.push('Expected must be ≥ 0');if(!Number.isFinite(actualAmount)||actualAmount<0)errors.push('Actual must be ≥ 0');const dup=State.sett.find(x=>x.id!==id&&x.mktId==marketplaceId&&x.ref===ref&&x.withdrawalDate===withdrawalDate);if(dup)errors.push('Duplicate withdrawal exists');if(errors.length){errEl.innerHTML='<div class="alert alert-error">'+errors.map(e=>'• '+e).join('<br>')+'</div>';toast('Validation failed','error');btnLoading(saveBtn,false);State.saving=false;return;}const rec={mktId:marketplaceId,storeCode:$('st_store').value.trim(),ref,period:$('st_period').value.trim(),expected:+expectedAmount.toFixed(2),actual:+actualAmount.toFixed(2),withdrawalDate,bankRef:$('st_bank').value.trim(),status,notes:$('st_notes').value.trim(),ownerId:currentOwnerId(),updatedAt:Date.now()};try{if(id){rec.id=id;await put('sett',rec);await audit('UPDATE_SETT',{id,ref,mktId:marketplaceId});}else{if('id' in rec)delete rec.id;try{await add('sett',rec);}catch(addErr){if(addErr&&addErr.name==='DataError'){rec.id=Date.now();await put('sett',rec);}else throw addErr;}await audit('CREATE_SETT',{ref,mktId:marketplaceId,actual:actualAmount});}let finalStatus=status;
+  $('st_mkt').onchange=()=>{const mid=+$('st_mkt').value;const m=State.mkt.find(x=>x.id==mid);const store=$('st_store');if(m&&!store.value)store.value=m.storeCode||'';const f=mid?marketplaceFinancials(mid):null;const info=$('settBalanceInfo');if(f&&info){info.style.display='';info.innerHTML=`<b>Selected Marketplace Balance:</b><br>W/D Balance: <b>${fmt(f.withdrawalBalance)}</b> · Withdrawn: <b class="success">${fmt(f.totalWithdrawn)}</b> · Available: <b class="warn">${fmt(f.available)}</b>`;}else if(info)info.style.display='none';};$('sf2').onsubmit=async e=>{e.preventDefault();if(State.saving)return;State.saving=true;const errEl=$('settErr');errEl.innerHTML='';const saveBtn=$('st_save');btnLoading(saveBtn,true);const marketplaceId=+$('st_mkt').value,ref=$('st_ref').value.trim(),withdrawalDate=$('st_date').value;const expectedRaw=$('st_exp').value,actualRaw=$('st_act').value,status=$('st_status').value;const errors=[];if(!marketplaceId)errors.push('Marketplace required');if(!ref)errors.push('Reference required');if(!withdrawalDate)errors.push('Date required');const expectedAmount=Number(expectedRaw),actualAmount=actualRaw===''?0:Number(actualRaw);if(expectedRaw===''||!Number.isFinite(expectedAmount)||expectedAmount<0)errors.push('Expected must be ≥ 0');if(!Number.isFinite(actualAmount)||actualAmount<0)errors.push('Actual must be ≥ 0');const dup=State.sett.find(x=>x.id!==id&&x.mktId==marketplaceId&&x.ref===ref&&x.withdrawalDate===withdrawalDate);if(dup)errors.push('Duplicate withdrawal exists');if(errors.length){errEl.innerHTML='<div class="alert alert-error">'+errors.map(e=>'• '+e).join('<br>')+'</div>';toast('Validation failed','error');btnLoading(saveBtn,false);State.saving=false;return;}
+let finalStatus=status;
 if(actualAmount>=expectedAmount && expectedAmount>0 && (finalStatus==='Pending'||finalStatus==='Partially Settled')){
   finalStatus='Settled';
-  rec.status=finalStatus;
-  if(id) await put('sett',rec);
 } else if(actualAmount>0 && actualAmount<expectedAmount && finalStatus==='Pending'){
   finalStatus='Partially Settled';
-  rec.status=finalStatus;
-  if(id) await put('sett',rec);
 }
-await loadAll();
-await syncSettlementNotifications();
-closeModal();
-renderSett();
-toast('✓ Withdrawal saved. Balance updated.','success');
-scheduleBackup();}catch(err){console.error(err);errEl.innerHTML='<div class="alert alert-error">Database error: '+(err.message||err)+'</div>';toast('Not saved','error');}finally{btnLoading(saveBtn,false);State.saving=false;}};}
+const rec={mktId:marketplaceId,storeCode:$('st_store').value.trim(),ref,period:$('st_period').value.trim(),expected:+expectedAmount.toFixed(2),actual:+actualAmount.toFixed(2),withdrawalDate,bankRef:$('st_bank').value.trim(),status:finalStatus,notes:$('st_notes').value.trim(),ownerId:currentOwnerId(),updatedAt:Date.now()};
+try{
+  if(id){
+    rec.id=id;
+    await put('sett',rec);
+    await audit('UPDATE_SETT',{id,ref,mktId:marketplaceId});
+  }else{
+    if('id' in rec)delete rec.id;
+    try{
+      await add('sett',rec);
+    }catch(addErr){
+      if(addErr&&addErr.name==='DataError'){
+        rec.id=Date.now();
+        await put('sett',rec);
+      }else throw addErr;
+    }
+    await audit('CREATE_SETT',{ref,mktId:marketplaceId,actual:actualAmount});
+  }
+  await loadAll();
+  await syncSettlementNotifications();
+  closeModal();
+  renderSett();
+  refreshCurrentView();
+  toast('✓ Withdrawal saved. Balance updated.','success');
+  scheduleBackup();
+}catch(err){
+  console.error(err);
+  errEl.innerHTML='<div class="alert alert-error">Database error: '+(err.message||err)+'</div>';
+  toast('Not saved','error');
+}finally{
+  btnLoading(saveBtn,false);
+  State.saving=false;
+}};}
 async function delSett(id){if(!confirm('Delete this withdrawal?'))return;await del('sett',id);await loadAll();await syncSettlementNotifications();renderSett();toast('Deleted','success');}
 function exportSett(){
   let rows=State.sett.slice();
@@ -2062,17 +2345,321 @@ function exportSett(){
 function getWeekRange(d){const date=new Date(d);const day=date.getDay();const diff=date.getDate()-day+(day===0?-6:1);const monday=new Date(date.setDate(diff));const sunday=new Date(monday);sunday.setDate(monday.getDate()+6);return{start:monday.toISOString().slice(0,10),end:sunday.toISOString().slice(0,10)};}
 function renderWeekly(){const now=new Date();const week=getWeekRange(now);$('view').innerHTML=`<div class="card"><h3 style="margin:0 0 8px">Weekly Report</h3><div class="grid grid-4" style="align-items:end"><div><label>Week Start</label><input type="date" class="input" id="wk_start" value="${week.start}"></div><div><label>Week End</label><input type="date" class="input" id="wk_end" value="${week.end}"></div><div><label>Marketplace</label><select class="input" id="wk_mkt"><option value="">All</option>${State.mkt.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div><div style="display:flex;gap:4px"><button class="btn btn-primary" onclick="drawWeekly()">Apply</button><button class="btn" onclick="exportWeeklyPDF()">⬇ PDF</button></div></div></div><div id="wk_out"></div>`;drawWeekly();}
 function drawWeekly(){const start=$('wk_start').value,end=$('wk_end').value,mid=$('wk_mkt').value;const salesFilter=s=>{const d=fmtDate(s.saleDate);if(!d||d<start||d>end)return false;if(mid&&String(s.mktId)!==String(mid))return false;return true;};const rows=State.sales.filter(salesFilter);const returns=State.returns.filter(r=>{const d=fmtDate(r.returnDate);if(!d||d<start||d>end)return false;if(mid&&String(r.marketplaceId)!==String(mid))return false;return true;});const agg=aggregateWithReturns(rows,returns);const mkts=mid?State.mkt.filter(m=>String(m.id)===String(mid)):State.mkt;const byMkt=mkts.map(m=>{const mrows=rows.filter(r=>String(r.mktId)===String(m.id));const mret=returns.filter(r=>String(r.marketplaceId)===String(m.id));const a=aggregateWithReturns(mrows,mret);const st=State.sett.filter(x=>String(x.mktId)===String(m.id)&&inDateRange(x.withdrawalDate,start,end));const withdrawn=st.reduce((a,x)=>a+num(x.actual),0);return{name:m.name,...a,withdrawn:+withdrawn.toFixed(2),available:+(a.netWithdrawal-withdrawn).toFixed(2)};}).filter(x=>x.orders>0||x.returnCount>0);$('wk_out').innerHTML=`<div class="kpi-grid"><div class="kpi"><div class="kpi-label">Period</div><div class="kpi-value" style="font-size:14px">${esc(start)} → ${esc(end)}</div></div><div class="kpi"><div class="kpi-label">Gross Sales</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(agg.gross)}</div></div><div class="kpi"><div class="kpi-label">Returns</div><div class="kpi-value danger">${fmt(agg.totalReturns)}</div></div><div class="kpi"><div class="kpi-label">Net Sales</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(agg.netSales)}</div></div><div class="kpi"><div class="kpi-label">Net Profit</div><div class="kpi-value ${agg.netProfit>=0?'success':'danger'}">${fmt(agg.netProfit)}</div></div><div class="kpi"><div class="kpi-label">Orders</div><div class="kpi-value">${agg.orders}</div></div></div><div class="card"><h3>Marketplace Breakdown</h3><div class="table-wrap"><table class="data"><thead><tr><th>Marketplace</th><th>Orders</th><th>Gross</th><th>Returns</th><th>Net Sales</th><th>Net Profit</th><th>Withdrawn</th><th>Available</th></tr></thead><tbody>${byMkt.length?byMkt.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.orders}</td><td>${fmt(x.gross)}</td><td class="danger">${fmt(x.totalReturns)}</td><td>${fmt(x.netSales)}</td><td class="${x.netProfit>=0?'success':'danger'}">${fmt(x.netProfit)}</td><td class="success">${fmt(x.withdrawn)}</td><td class="warn">${fmt(x.available)}</td></tr>`).join(''):'<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No data for this period.</td></tr>'}</tbody></table></div></div>`;}
-function exportWeeklyPDF(){const start=$('wk_start').value,end=$('wk_end').value,mid=$('wk_mkt').value;const rows=State.sales.filter(s=>{const d=fmtDate(s.saleDate);return d&&d>=start&&d<=end&&(!mid||String(s.mktId)===String(mid));});const returns=State.returns.filter(r=>{const d=fmtDate(r.returnDate);return d&&d>=start&&d<=end&&(!mid||String(r.marketplaceId)===String(mid));});const agg=aggregateWithReturns(rows,returns);const{jsPDF}=window.jspdf;const doc=new jsPDF();doc.setFillColor(17,17,17);doc.rect(0,0,210,28,'F');doc.setTextColor(255,255,255);doc.setFontSize(15);doc.text('E SMART ELECTRONICS',14,13);doc.setFontSize(11);doc.text(`Weekly Report — ${start} to ${end}`,14,21);doc.setTextColor(20,20,20);doc.setFontSize(9);doc.text('Generated: '+new Date().toLocaleString(),14,36);doc.autoTable({startY:44,head:[['Metric','Value']],body:[['Period',`${start} to ${end}`],['Gross Sales',fmt(agg.gross)],['Returns',fmt(agg.totalReturns)],['Net Sales',fmt(agg.netSales)],['Total Orders',agg.orders],['Quantity',agg.qty],['Product Cost',fmt(agg.cost)],['Total Fees',fmt(agg.fees)],['Return Service Fees',fmt(agg.totalServiceFees)],['Withdrawal Balance',fmt(agg.netWithdrawal)],['Net Profit',fmt(agg.netProfit)],['Profit Margin',agg.margin.toFixed(2)+'%']],theme:'grid',headStyles:{fillColor:[17,17,17]}});doc.save(`weekly-report-${start}-to-${end}.pdf`);toast('PDF exported','success');}
+/* ============================================================
+   MARKETPLACE-WISE PDF REPORT GENERATOR (TASK 2)
+   ============================================================ */
+function generateMarketplaceReportPDF(cfg){
+  const {title, subtitle, periodLabel, dateRange, rows, returns, settList, filename} = cfg;
+  const {jsPDF} = window.jspdf;
+  const doc = new jsPDF('p','mm','a4');
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  // Detect marketplace IDs dynamically from actual stored records
+  const mktIds = new Set();
+  rows.forEach(r => { if(r.mktId != null && r.mktId !== '') mktIds.add(String(r.mktId)); });
+  returns.forEach(r => { if(r.marketplaceId != null && r.marketplaceId !== '') mktIds.add(String(r.marketplaceId)); });
+  settList.forEach(s => { if(s.mktId != null && s.mktId !== '') mktIds.add(String(s.mktId)); });
+
+  // Calculate Overall Grand Total using existing formulas
+  const grandAgg = aggregateWithReturns(rows, returns);
+  const grandWithdrawn = settList.reduce((sum, s) => sum + num(s.actual), 0);
+  const grandAvailable = +(grandAgg.netWithdrawal - grandWithdrawn).toFixed(2);
+
+  // Header Banner
+  doc.setFillColor(17, 24, 39);
+  doc.rect(0, 0, pageWidth, 32, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(15);
+  doc.setFont(undefined, 'bold');
+  doc.text('E SMART ELECTRONICS', 14, 12);
+  doc.setFontSize(11);
+  doc.setFont(undefined, 'normal');
+  doc.text(`${title} — ${subtitle}`, 14, 20);
+  doc.setFontSize(8);
+  doc.setTextColor(209, 213, 219);
+  doc.text(`Period: ${periodLabel} (${dateRange})  ·  Currency: ${State.settings.currency||'AED'}  ·  Generated: ${new Date().toLocaleString()}`, 14, 27);
+
+  let currentY = 38;
+
+  function checkPageSpace(requiredHeight){
+    if(currentY + requiredHeight > pageHeight - 20){
+      doc.addPage();
+      currentY = 20;
+    }
+  }
+
+  if(mktIds.size === 0){
+    doc.setTextColor(100, 100, 100);
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'italic');
+    doc.text('No sales, returns, or withdrawal transactions recorded for this reporting period.', 14, currentY + 6);
+    currentY += 16;
+  } else {
+    // 1. Comparison Overview Table across marketplaces
+    const sortedMktIds = Array.from(mktIds).sort((a, b) => {
+      const na = State.mkt.find(m => String(m.id) === String(a))?.name || '';
+      const nb = State.mkt.find(m => String(m.id) === String(b))?.name || '';
+      return na.localeCompare(nb);
+    });
+
+    const mktSummaryData = sortedMktIds.map(mid => {
+      const m = State.mkt.find(x => String(x.id) === String(mid));
+      const mName = m ? m.name : (`Marketplace #${mid}`);
+      const mRows = rows.filter(r => String(r.mktId) === String(mid));
+      const mRet = returns.filter(r => String(r.marketplaceId) === String(mid));
+      const mAgg = aggregateWithReturns(mRows, mRet);
+      const mSt = settList.filter(s => String(s.mktId) === String(mid));
+      const mWd = mSt.reduce((sum, s) => sum + num(s.actual), 0);
+      const mAvail = +(mAgg.netWithdrawal - mWd).toFixed(2);
+      return { id: mid, name: mName, agg: mAgg, withdrawn: mWd, available: mAvail };
+    });
+
+    checkPageSpace(30);
+    doc.setTextColor(17, 24, 39);
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'bold');
+    doc.text('Marketplace Comparison Overview', 14, currentY);
+    currentY += 4;
+
+    const compHeaders = [['Marketplace', 'Orders', 'Gross Sales', 'Returns', 'Net Sales', 'Fees', 'Cost', 'Net Profit', 'Margin']];
+    const compBody = mktSummaryData.map(d => [
+      d.name,
+      d.agg.orders,
+      fmt(d.agg.gross),
+      fmt(d.agg.totalReturns),
+      fmt(d.agg.netSales),
+      fmt(d.agg.fees),
+      fmt(d.agg.cost),
+      fmt(d.agg.netProfit),
+      d.agg.margin.toFixed(2) + '%'
+    ]);
+    compBody.push([
+      'TOTAL',
+      grandAgg.orders,
+      fmt(grandAgg.gross),
+      fmt(grandAgg.totalReturns),
+      fmt(grandAgg.netSales),
+      fmt(grandAgg.fees),
+      fmt(grandAgg.cost),
+      fmt(grandAgg.netProfit),
+      grandAgg.margin.toFixed(2) + '%'
+    ]);
+
+    doc.autoTable({
+      startY: currentY,
+      head: compHeaders,
+      body: compBody,
+      theme: 'grid',
+      headStyles: { fillColor: [31, 41, 55], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
+      bodyStyles: { fontSize: 8, textColor: [30, 30, 30] },
+      didParseCell: function(data){
+        if(data.row.index === compBody.length - 1){
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.fillColor = [243, 244, 246];
+        }
+      },
+      margin: { left: 14, right: 14 }
+    });
+    currentY = doc.lastAutoTable.finalY + 10;
+
+    // 2. Separate Detailed Section for EACH Marketplace
+    sortedMktIds.forEach(mid => {
+      const data = mktSummaryData.find(d => d.id === mid);
+      const agg = data.agg;
+
+      checkPageSpace(52);
+      doc.setTextColor(17, 24, 39);
+      doc.setFontSize(11);
+      doc.setFont(undefined, 'bold');
+      doc.text(`Marketplace Section: ${data.name}`, 14, currentY);
+      currentY += 3;
+
+      const mktBody = [
+        ['Gross Sales', fmt(agg.gross), 'Total Product Cost', fmt(agg.cost)],
+        ['Returns Amount', fmt(agg.totalReturns), 'Marketplace Fees', fmt(agg.fees)],
+        ['Net Sales', fmt(agg.netSales), 'Return Service Fees', fmt(agg.totalServiceFees)],
+        ['Total Orders', String(agg.orders), 'Net Withdrawal Balance', fmt(agg.netWithdrawal)],
+        ['Quantity Sold', String(agg.qty), 'Bank Withdrawn Amount', fmt(data.withdrawn)],
+        ['Profit Margin', agg.margin.toFixed(2) + '%', 'Available Balance', fmt(data.available)],
+        ['Cancelled Orders', String(agg.cancelled), 'Net Profit', fmt(agg.netProfit)]
+      ];
+
+      doc.autoTable({
+        startY: currentY,
+        head: [['Metric', 'Value', 'Metric', 'Value']],
+        body: mktBody,
+        theme: 'striped',
+        headStyles: { fillColor: [55, 65, 81], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
+        bodyStyles: { fontSize: 8, textColor: [30, 30, 30] },
+        columnStyles: {
+          0: { fontStyle: 'bold', cellWidth: 40 },
+          1: { cellWidth: 50 },
+          2: { fontStyle: 'bold', cellWidth: 45 },
+          3: { cellWidth: 45 }
+        },
+        didParseCell: function(cellData){
+          if(cellData.row.index === 6 && cellData.column.index >= 2){
+            cellData.cell.styles.fontStyle = 'bold';
+            if(agg.netProfit >= 0) cellData.cell.styles.textColor = [5, 150, 105];
+            else cellData.cell.styles.textColor = [220, 38, 38];
+          }
+        },
+        margin: { left: 14, right: 14 }
+      });
+      currentY = doc.lastAutoTable.finalY + 8;
+    });
+  }
+
+  // 3. Final Grand Total / Overall Summary Section
+  checkPageSpace(55);
+  doc.setTextColor(17, 24, 39);
+  doc.setFontSize(12);
+  doc.setFont(undefined, 'bold');
+  doc.text('★ Grand Total / Overall Summary', 14, currentY);
+  currentY += 3;
+
+  const grandBody = [
+    ['Total Gross Sales', fmt(grandAgg.gross), 'Total Product Cost', fmt(grandAgg.cost)],
+    ['Total Returns', fmt(grandAgg.totalReturns), 'Total Marketplace Fees', fmt(grandAgg.fees)],
+    ['Net Sales', fmt(grandAgg.netSales), 'Return Service Fees', fmt(grandAgg.totalServiceFees)],
+    ['Total Orders', String(grandAgg.orders), 'Net Withdrawal Balance', fmt(grandAgg.netWithdrawal)],
+    ['Total Quantity Sold', String(grandAgg.qty), 'Total Bank Withdrawn', fmt(grandWithdrawn)],
+    ['Profit Margin', grandAgg.margin.toFixed(2) + '%', 'Remaining Available Balance', fmt(grandAvailable)],
+    ['Cancelled / Refunded', `${grandAgg.cancelled} cancelled / ${grandAgg.returned} returned`, 'Net Profit (Overall)', fmt(grandAgg.netProfit)]
+  ];
+
+  doc.autoTable({
+    startY: currentY,
+    head: [['Overall Financial Metric', 'Amount', 'Overall Financial Metric', 'Amount']],
+    body: grandBody,
+    theme: 'grid',
+    headStyles: { fillColor: [17, 24, 39], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 8 },
+    bodyStyles: { fontSize: 8.5, textColor: [20, 20, 20] },
+    columnStyles: {
+      0: { fontStyle: 'bold', cellWidth: 45, fillColor: [249, 250, 251] },
+      1: { cellWidth: 45 },
+      2: { fontStyle: 'bold', cellWidth: 45, fillColor: [249, 250, 251] },
+      3: { cellWidth: 45 }
+    },
+    didParseCell: function(cellData){
+      if(cellData.row.index === 6 && cellData.column.index >= 2){
+        cellData.cell.styles.fontStyle = 'bold';
+        cellData.cell.styles.fontSize = 9;
+        if(grandAgg.netProfit >= 0) cellData.cell.styles.textColor = [5, 150, 105];
+        else cellData.cell.styles.textColor = [220, 38, 38];
+      }
+    },
+    margin: { left: 14, right: 14 }
+  });
+
+  // Footer on each page
+  const totalPages = doc.getNumberOfPages();
+  for(let i = 1; i <= totalPages; i++){
+    doc.setPage(i);
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text(`Page ${i} of ${totalPages}  ·  E SMART ELECTRONICS Management System`, pageWidth / 2, pageHeight - 8, { align: 'center' });
+  }
+
+  doc.save(filename);
+  toast('✓ PDF report exported successfully', 'success');
+}
+
+function exportWeeklyPDF(){
+  const start=$('wk_start').value, end=$('wk_end').value, mid=$('wk_mkt').value;
+  const rows=State.sales.filter(s=>{
+    const d=fmtDate(s.saleDate);
+    return d&&d>=start&&d<=end&&(!mid||String(s.mktId)===String(mid));
+  });
+  const returns=State.returns.filter(r=>{
+    const d=fmtDate(r.returnDate);
+    return d&&d>=start&&d<=end&&(!mid||String(r.marketplaceId)===String(mid));
+  });
+  const settList=State.sett.filter(s=>{
+    const d=fmtDate(s.withdrawalDate);
+    return d&&d>=start&&d<=end&&(!mid||String(s.mktId)===String(mid));
+  });
+  const mktObj=mid?State.mkt.find(m=>String(m.id)===String(mid)):null;
+  const subtitle=mktObj?`${mktObj.name} (Filtered)`:'All Marketplaces';
+
+  generateMarketplaceReportPDF({
+    title:'Weekly Financial Report',
+    subtitle,
+    periodLabel:`Week ${start} to ${end}`,
+    dateRange:`${start} to ${end}`,
+    rows,
+    returns,
+    settList,
+    filename:`weekly-report-${start}-to-${end}${mid?'-'+(mktObj?.name||mid):''}.pdf`
+  });
+}
 
 function renderMonthly(){const years=[...new Set(State.sales.map(s=>yearKey(s.saleDate)).filter(Boolean))].sort().reverse();const cy=String(new Date().getFullYear());if(!years.includes(cy))years.unshift(cy);$('view').innerHTML=`<div class="card"><h3 style="margin:0 0 8px">Monthly Report</h3><div class="grid grid-4" style="align-items:end"><div><label>Year</label><select class="input" id="mo_year">${years.map(y=>`<option ${y===cy?'selected':''}>${y}</option>`).join('')}</select></div><div><label>Month</label><select class="input" id="mo_month">${['January','February','March','April','May','June','July','August','September','October','November','December'].map((m,i)=>`<option value="${i+1}" ${i+1===new Date().getMonth()+1?'selected':''}>${m}</option>`).join('')}</select></div><div><label>Marketplace</label><select class="input" id="mo_mkt"><option value="">All</option>${State.mkt.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div><div style="display:flex;gap:4px"><button class="btn btn-primary" onclick="drawMonthly()">Apply</button><button class="btn" onclick="exportMonthlyExcel()">⬇ Excel</button><button class="btn" onclick="exportMonthlyPDF()">⬇ PDF</button></div></div></div><div id="mo_out"></div>`;drawMonthly();}
 function drawMonthly(){const y=+$('mo_year').value,m=+$('mo_month').value,mid=$('mo_mkt').value;const salesFilter=s=>{const d=parseDate(s.saleDate);if(!d)return false;return d.getFullYear()===y&&d.getMonth()+1===m&&(!mid||String(s.mktId)===String(mid));};const rows=State.sales.filter(salesFilter);const returns=State.returns.filter(r=>{const d=parseDate(r.returnDate);if(!d)return false;return d.getFullYear()===y&&d.getMonth()+1===m&&(!mid||String(r.marketplaceId)===String(mid));});const agg=aggregateWithReturns(rows,returns);const mkts=mid?State.mkt.filter(mk=>String(mk.id)===String(mid)):State.mkt;const byMkt=mkts.map(mk=>{const mrows=rows.filter(r=>String(r.mktId)===String(mk.id));const mret=returns.filter(r=>String(r.marketplaceId)===String(mk.id));const a=aggregateWithReturns(mrows,mret);const st=State.sett.filter(x=>{const d=parseDate(x.withdrawalDate);return d&&d.getFullYear()===y&&d.getMonth()+1===m&&String(x.mktId)===String(mk.id);});const withdrawn=st.reduce((a,x)=>a+num(x.actual),0);return{name:mk.name,...a,withdrawn:+withdrawn.toFixed(2),available:+(a.netWithdrawal-withdrawn).toFixed(2)};}).filter(x=>x.orders>0||x.returnCount>0);$('mo_out').innerHTML=`<div class="card"><h3>${['','January','February','March','April','May','June','July','August','September','October','November','December'][m]} ${y}</h3><table class="data"><tbody><tr><td>Gross Sales</td><td style="text-align:right;color:var(--user-accent, var(--primary));font-weight:800">${fmt(agg.gross)}</td></tr><tr><td>Returns</td><td style="text-align:right" class="danger">${fmt(agg.totalReturns)}</td></tr><tr><td>Net Sales</td><td style="text-align:right;color:var(--user-accent, var(--primary));font-weight:800">${fmt(agg.netSales)}</td></tr><tr><td>Orders</td><td style="text-align:right">${agg.orders}</td></tr><tr><td>Qty</td><td style="text-align:right">${agg.qty}</td></tr><tr><td>Cost</td><td style="text-align:right">${fmt(agg.cost)}</td></tr><tr><td>Fees</td><td style="text-align:right">${fmt(agg.fees)}</td></tr><tr><td>Return Service Fees</td><td style="text-align:right" class="warn">${fmt(agg.totalServiceFees)}</td></tr><tr><td>Withdrawal</td><td style="text-align:right;color:var(--user-accent, var(--primary));font-weight:800">${fmt(agg.netWithdrawal)}</td></tr><tr><td>Net Profit</td><td style="text-align:right;font-weight:800" class="${agg.netProfit>=0?'success':'danger'}">${fmt(agg.netProfit)}</td></tr><tr><td>Margin</td><td style="text-align:right">${agg.margin.toFixed(2)}%</td></tr></tbody></table></div><div class="card"><h3>Marketplace Breakdown</h3><div class="table-wrap"><table class="data"><thead><tr><th>Marketplace</th><th>Orders</th><th>Gross</th><th>Returns</th><th>Net Sales</th><th>Profit</th><th>Withdrawn</th><th>Available</th></tr></thead><tbody>${byMkt.length?byMkt.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.orders}</td><td>${fmt(x.gross)}</td><td class="danger">${fmt(x.totalReturns)}</td><td>${fmt(x.netSales)}</td><td class="${x.netProfit>=0?'success':'danger'}">${fmt(x.netProfit)}</td><td class="success">${fmt(x.withdrawn)}</td><td class="warn">${fmt(x.available)}</td></tr>`).join(''):'<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No data.</td></tr>'}</tbody></table></div></div>`;}
 function exportMonthlyExcel(){const y=+$('mo_year').value;const rows=[];for(let m=1;m<=12;m++){const mr=State.sales.filter(s=>{const d=parseDate(s.saleDate);return d&&d.getFullYear()===y&&d.getMonth()+1===m;});const ret=State.returns.filter(r=>{const d=parseDate(r.returnDate);return d&&d.getFullYear()===y&&d.getMonth()+1===m;});const a=aggregateWithReturns(mr,ret);rows.push({Month:m,Orders:a.orders,Gross:a.gross,Returns:a.totalReturns,NetSales:a.netSales,Profit:a.netProfit});}const ws=XLSX.utils.json_to_sheet(rows);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Monthly');XLSX.writeFile(wb,`monthly-${y}.xlsx`);toast('Exported','success');}
-function exportMonthlyPDF(){const y=+$('mo_year').value,m=+$('mo_month').value;const rows=State.sales.filter(s=>{const d=parseDate(s.saleDate);return d&&d.getFullYear()===y&&d.getMonth()+1===m;});const ret=State.returns.filter(r=>{const d=parseDate(r.returnDate);return d&&d.getFullYear()===y&&d.getMonth()+1===m;});const agg=aggregateWithReturns(rows,ret);const{jsPDF}=window.jspdf;const doc=new jsPDF();doc.setFillColor(17,17,17);doc.rect(0,0,210,28,'F');doc.setTextColor(255,255,255);doc.setFontSize(15);doc.text('E SMART ELECTRONICS',14,13);doc.setFontSize(11);doc.text(`Monthly Report — ${['','January','February','March','April','May','June','July','August','September','October','November','December'][m]} ${y}`,14,21);doc.setTextColor(20,20,20);doc.setFontSize(9);doc.text('Generated: '+new Date().toLocaleString(),14,30);doc.autoTable({startY:40,head:[['Metric','Value']],body:[['Gross Sales',fmt(agg.gross)],['Returns',fmt(agg.totalReturns)],['Net Sales',fmt(agg.netSales)],['Total Orders',agg.orders],['Quantity',agg.qty],['Product Cost',fmt(agg.cost)],['Total Fees',fmt(agg.fees)],['Return Service Fees',fmt(agg.totalServiceFees)],['Withdrawal Balance',fmt(agg.netWithdrawal)],['Net Profit',fmt(agg.netProfit)],['Margin',agg.margin.toFixed(2)+'%']],theme:'grid',headStyles:{fillColor:[17,17,17]}});doc.save(`monthly-${y}-${String(m).padStart(2,'0')}.pdf`);toast('PDF exported','success');}
+function exportMonthlyPDF(){
+  const y=+$('mo_year').value, m=+$('mo_month').value, mid=$('mo_mkt')?.value||'';
+  const monthNames=['','January','February','March','April','May','June','July','August','September','October','November','December'];
+  const monthName=monthNames[m]||String(m);
+  const rows=State.sales.filter(s=>{
+    const d=parseDate(s.saleDate);
+    return d&&d.getFullYear()===y&&d.getMonth()+1===m&&(!mid||String(s.mktId)===String(mid));
+  });
+  const returns=State.returns.filter(r=>{
+    const d=parseDate(r.returnDate);
+    return d&&d.getFullYear()===y&&d.getMonth()+1===m&&(!mid||String(r.marketplaceId)===String(mid));
+  });
+  const settList=State.sett.filter(s=>{
+    const d=parseDate(s.withdrawalDate);
+    return d&&d.getFullYear()===y&&d.getMonth()+1===m&&(!mid||String(s.mktId)===String(mid));
+  });
+  const lastDay=new Date(y,m,0).getDate();
+  const dateRange=`${y}-${String(m).padStart(2,'0')}-01 to ${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+  const mktObj=mid?State.mkt.find(mk=>String(mk.id)===String(mid)):null;
+  const subtitle=mktObj?`${monthName} ${y} · ${mktObj.name}`:`${monthName} ${y} · All Marketplaces`;
+
+  generateMarketplaceReportPDF({
+    title:'Monthly Financial Report',
+    subtitle,
+    periodLabel:`${monthName} ${y}`,
+    dateRange,
+    rows,
+    returns,
+    settList,
+    filename:`monthly-report-${y}-${String(m).padStart(2,'0')}${mid?'-'+(mktObj?.name||mid):''}.pdf`
+  });
+}
 
 function renderYearly(){const years=[...new Set(State.sales.map(s=>yearKey(s.saleDate)).filter(Boolean))].sort().reverse();const cy=String(new Date().getFullYear());if(!years.includes(cy))years.unshift(cy);$('view').innerHTML=`<div class="card"><h3 style="margin:0 0 8px">Yearly Report</h3><div class="grid grid-4" style="align-items:end"><div><label>Year</label><select class="input" id="yr_year">${years.map(y=>`<option ${y===cy?'selected':''}>${y}</option>`).join('')}</select></div><div><label>Marketplace</label><select class="input" id="yr_mkt"><option value="">All</option>${State.mkt.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div><div style="display:flex;gap:4px"><button class="btn btn-primary" onclick="drawYearly()">Apply</button><button class="btn" onclick="exportYearlyExcel()">⬇ Excel</button><button class="btn" onclick="exportYearlyPDF()">⬇ PDF</button></div></div></div><div id="yr_out"></div>`;drawYearly();}
 function drawYearly(){const y=+$('yr_year').value,mid=$('yr_mkt').value;const rows=State.sales.filter(s=>yearKey(s.saleDate)===String(y)&&(!mid||String(s.mktId)===String(mid)));const ret=State.returns.filter(r=>yearKey(r.returnDate)===String(y)&&(!mid||String(r.marketplaceId)===String(mid)));const agg=aggregateWithReturns(rows,ret);const monthly=Array.from({length:12},(_,i)=>{const mrows=rows.filter(r=>{const d=parseDate(r.saleDate);return d&&d.getMonth()===i;});const mret=ret.filter(r=>{const d=parseDate(r.returnDate);return d&&d.getMonth()===i;});return{month:['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][i],...aggregateWithReturns(mrows,mret)};});const mkts=mid?State.mkt.filter(mk=>String(mk.id)===String(mid)):State.mkt;const byMkt=mkts.map(mk=>{const mrows=rows.filter(r=>String(r.mktId)===String(mk.id));const mret=ret.filter(r=>String(r.marketplaceId)===String(mk.id));const a=aggregateWithReturns(mrows,mret);const st=State.sett.filter(x=>String(x.mktId)===String(mk.id)&&yearKey(x.withdrawalDate)===String(y));const withdrawn=st.reduce((a,x)=>a+num(x.actual),0);return{name:mk.name,...a,withdrawn:+withdrawn.toFixed(2),available:+(a.netWithdrawal-withdrawn).toFixed(2)};}).filter(x=>x.orders>0||x.returnCount>0);$('yr_out').innerHTML=`<div class="kpi-grid"><div class="kpi"><div class="kpi-label">Gross Sales</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(agg.gross)}</div></div><div class="kpi"><div class="kpi-label">Returns</div><div class="kpi-value danger">${fmt(agg.totalReturns)}</div></div><div class="kpi"><div class="kpi-label">Net Sales</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(agg.netSales)}</div></div><div class="kpi"><div class="kpi-label">Net Profit</div><div class="kpi-value ${agg.netProfit>=0?'success':'danger'}">${fmt(agg.netProfit)}</div></div><div class="kpi"><div class="kpi-label">Orders</div><div class="kpi-value">${agg.orders}</div></div><div class="kpi"><div class="kpi-label">Margin</div><div class="kpi-value">${agg.margin.toFixed(2)}%</div></div></div><div class="grid grid-2"><div class="card"><h3>Monthly Breakdown</h3><table class="data"><thead><tr><th>Month</th><th>Orders</th><th>Gross</th><th>Returns</th><th>Net Sales</th><th>Profit</th></tr></thead><tbody>${monthly.map(x=>`<tr><td>${x.month}</td><td>${x.orders}</td><td>${fmt(x.gross)}</td><td class="danger">${fmt(x.totalReturns)}</td><td>${fmt(x.netSales)}</td><td class="${x.netProfit>=0?'success':'danger'}">${fmt(x.netProfit)}</td></tr>`).join('')}<tr style="background:var(--panel2);font-weight:800"><td>TOTAL</td><td>${agg.orders}</td><td>${fmt(agg.gross)}</td><td>${fmt(agg.totalReturns)}</td><td>${fmt(agg.netSales)}</td><td>${fmt(agg.netProfit)}</td></tr></tbody></table></div><div class="card"><h3>Marketplace Breakdown</h3><table class="data"><thead><tr><th>Marketplace</th><th>Orders</th><th>Gross</th><th>Returns</th><th>Net Sales</th><th>Profit</th><th>Withdrawn</th><th>Available</th></tr></thead><tbody>${byMkt.length?byMkt.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.orders}</td><td>${fmt(x.gross)}</td><td class="danger">${fmt(x.totalReturns)}</td><td>${fmt(x.netSales)}</td><td class="${x.netProfit>=0?'success':'danger'}">${fmt(x.netProfit)}</td><td class="success">${fmt(x.withdrawn)}</td><td class="warn">${fmt(x.available)}</td></tr>`).join(''):'<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">No data.</td></tr>'}</tbody></table></div></div>`;}
 function exportYearlyExcel(){const y=+$('yr_year').value;const rows=State.sales.filter(s=>yearKey(s.saleDate)===String(y));const ret=State.returns.filter(r=>yearKey(r.returnDate)===String(y));const a=aggregateWithReturns(rows,ret);const ws=XLSX.utils.json_to_sheet([{Year:y,Orders:a.orders,Gross:a.gross,Returns:a.totalReturns,NetSales:a.netSales,Profit:a.netProfit}]);const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Yearly');XLSX.writeFile(wb,`yearly-${y}.xlsx`);toast('Exported','success');}
-function exportYearlyPDF(){const y=+$('yr_year').value;const rows=State.sales.filter(s=>yearKey(s.saleDate)===String(y));const ret=State.returns.filter(r=>yearKey(r.returnDate)===String(y));const agg=aggregateWithReturns(rows,ret);const{jsPDF}=window.jspdf;const doc=new jsPDF();doc.setFillColor(17,17,17);doc.rect(0,0,210,28,'F');doc.setTextColor(255,255,255);doc.setFontSize(15);doc.text('E SMART ELECTRONICS',14,13);doc.setFontSize(11);doc.text(`Yearly Report — ${y}`,14,21);doc.setTextColor(20,20,20);doc.setFontSize(9);doc.text('Generated: '+new Date().toLocaleString(),14,30);doc.autoTable({startY:40,head:[['Metric','Value']],body:[['Gross Sales',fmt(agg.gross)],['Returns',fmt(agg.totalReturns)],['Net Sales',fmt(agg.netSales)],['Orders',agg.orders],['Quantity',agg.qty],['Fees',fmt(agg.fees)],['Return Service Fees',fmt(agg.totalServiceFees)],['Withdrawal',fmt(agg.netWithdrawal)],['Cost',fmt(agg.cost)],['Net Profit',fmt(agg.netProfit)],['Margin',agg.margin.toFixed(2)+'%']],theme:'grid',headStyles:{fillColor:[17,17,17]}});doc.save(`yearly-${y}.pdf`);toast('PDF exported','success');}
+function exportYearlyPDF(){
+  const y=+$('yr_year').value, mid=$('yr_mkt')?.value||'';
+  const rows=State.sales.filter(s=>{
+    return yearKey(s.saleDate)===String(y)&&(!mid||String(s.mktId)===String(mid));
+  });
+  const returns=State.returns.filter(r=>{
+    return yearKey(r.returnDate)===String(y)&&(!mid||String(r.marketplaceId)===String(mid));
+  });
+  const settList=State.sett.filter(s=>{
+    return yearKey(s.withdrawalDate)===String(y)&&(!mid||String(s.mktId)===String(mid));
+  });
+  const dateRange=`${y}-01-01 to ${y}-12-31`;
+  const mktObj=mid?State.mkt.find(mk=>String(mk.id)===String(mid)):null;
+  const subtitle=mktObj?`Year ${y} · ${mktObj.name}`:`Year ${y} · All Marketplaces`;
+
+  generateMarketplaceReportPDF({
+    title:'Yearly Financial Report',
+    subtitle,
+    periodLabel:`Year ${y}`,
+    dateRange,
+    rows,
+    returns,
+    settList,
+    filename:`yearly-report-${y}${mid?'-'+(mktObj?.name||mid):''}.pdf`
+  });
+}
 
 function renderMktPerf(){$('view').innerHTML=`<div class="card"><h3 style="margin:0 0 8px">Marketplace Performance</h3><div class="grid grid-4" style="align-items:end"><div><label>From</label><input type="date" class="input" id="mp_from"></div><div><label>To</label><input type="date" class="input" id="mp_to"></div><div><label>Marketplace</label><select class="input" id="mp_focus"><option value="">All</option>${State.mkt.map(m=>`<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div><div><button class="btn btn-primary" onclick="drawMktPerf()">Apply</button></div></div></div><div id="mp_summary"></div><div class="card"><h3>Financial Summary</h3><div class="table-wrap"><table class="data" id="mp_table"></table></div></div>`;drawMktPerf();}
 function drawMktPerf(){const from=$('mp_from').value,to=$('mp_to').value,focus=$('mp_focus').value;const mkts=focus?State.mkt.filter(m=>String(m.id)===String(focus)):State.mkt;const data=mkts.map(m=>{let s=State.sales.filter(x=>String(x.mktId)===String(m.id));if(from)s=s.filter(r=>fmtDate(r.saleDate)>=from);if(to)s=s.filter(r=>fmtDate(r.saleDate)<=to);let r=State.returns.filter(x=>String(x.marketplaceId)===String(m.id));if(from)r=r.filter(x=>fmtDate(x.returnDate)>=from);if(to)r=r.filter(x=>fmtDate(x.returnDate)<=to);const a=aggregateWithReturns(s,r);const st=State.sett.filter(x=>String(x.mktId)===String(m.id)&&inDateRange(x.withdrawalDate,from,to));const exp=st.reduce((a,x)=>a+(num(x.expected)>0?num(x.expected):num(x.actual)),0),act=st.reduce((a,x)=>a+num(x.actual),0);return{m,...a,expected:+exp.toFixed(2),actual:+act.toFixed(2),pending:+Math.max(0,exp-act).toFixed(2)};});const sumEl=$('mp_summary');if(focus&&data.length===1){const x=data[0];sumEl.innerHTML=`<div class="card"><div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">${mktLogo(x.m,30)}<h3 style="margin:0">${esc(x.m.name)} Summary</h3></div><div class="kpi-grid"><div class="kpi"><div class="kpi-label">Gross Sales</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(x.gross)}</div></div><div class="kpi"><div class="kpi-label">Returns</div><div class="kpi-value danger">${fmt(x.totalReturns)}</div></div><div class="kpi"><div class="kpi-label">Net Sales</div><div class="kpi-value" style="color:var(--user-accent, var(--primary))">${fmt(x.netSales)}</div></div><div class="kpi"><div class="kpi-label">Cost</div><div class="kpi-value">${fmt(x.cost)}</div></div><div class="kpi"><div class="kpi-label">Fees</div><div class="kpi-value warn">${fmt(x.fees)}</div></div><div class="kpi"><div class="kpi-label">Net Profit</div><div class="kpi-value ${x.netProfit>=0?'success':'danger'}">${fmt(x.netProfit)}</div></div><div class="kpi"><div class="kpi-label">Expected</div><div class="kpi-value">${fmt(x.expected)}</div></div><div class="kpi"><div class="kpi-label">Received</div><div class="kpi-value success">${fmt(x.actual)}</div></div><div class="kpi"><div class="kpi-label">Pending</div><div class="kpi-value warn">${fmt(x.pending)}</div></div></div></div>`;}else sumEl.innerHTML='';$('mp_table').innerHTML=`<thead><tr><th>Marketplace</th><th>Orders</th><th>Gross</th><th>Returns</th><th>Net Sales</th><th>Fees</th><th>Net Profit</th><th>Expected</th><th>Received</th><th>Pending</th></tr></thead><tbody>${data.map(x=>`<tr><td>${mktLogo(x.m,20)}${esc(x.m.name)}</td><td>${x.orders}</td><td>${fmt(x.gross)}</td><td class="danger">${fmt(x.totalReturns)}</td><td>${fmt(x.netSales)}</td><td>${fmt(x.fees)}</td><td class="${x.netProfit>=0?'success':'danger'}"><b>${fmt(x.netProfit)}</b></td><td>${fmt(x.expected)}</td><td>${fmt(x.actual)}</td><td>${fmt(x.pending)}</td></tr>`).join('')}</tbody>`;}
