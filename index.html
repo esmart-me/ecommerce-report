@@ -3103,6 +3103,12 @@ window.syncSettlementNotifications = syncSettlementNotifications;
 window.dismissNotification = dismissNotification;
 boot();
 </script>
+<!-- Area to display the fetched data from Database -->
+<div id="dataContainer" style="margin-top: 50px; padding: 20px; border: 2px dashed #007bff; border-radius: 8px; background-color: #f8f9fa;">
+    <h3 style="color: #333; font-family: sans-serif;">Data from Database:</h3>
+    <ul id="dataList" style="color: #555; font-family: sans-serif; line-height: 1.8;"></ul>
+</div>
+
 <!-- Firebase SDKs -->
 <script src="https://www.gstatic.com/firebasejs/10.1.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.1.0/firebase-firestore-compat.js"></script>
@@ -3113,7 +3119,7 @@ boot();
 <script>
   // 1. Replace with your actual Firebase project configuration
   const firebaseConfig = {
-    apiKey: "AIzaSyDhDOiQ-bqtZmL7ltaV2xtDSPUMN9F-y8I",
+     apiKey: "AIzaSyDhDOiQ-bqtZmL7ltaV2xtDSPUMN9F-y8I",
     authDomain: "ecommerce-report-35c12.firebaseapp.com",
     projectId: "ecommerce-report-35c12",
     storageBucket: "ecommerce-report-35c12.firebasestorage.app",
@@ -3121,22 +3127,40 @@ boot();
     appId: "1:152653940148:web:14fcd12aadb39783291ee1"
   };
 
-  // 2. Initialize Firebase
   try {
+    // 2. Initialize Firebase
     firebase.initializeApp(firebaseConfig);
     const db = firebase.firestore();
 
-    // 3. Function to test the database connection
+    // 3. Function to save data to the database
     window.testDatabase = function() {
       db.collection("testData").add({
-          message: "Hello, the database is working!",
+          message: "Hello from GitHub Pages!",
           time: new Date()
       }).then(() => {
-          alert("Success! Database connected successfully.");
+          console.log("Success! Data saved.");
       }).catch((error) => {
           alert("Error: " + error.message);
       });
     };
+
+    // 4. Function to fetch and display data in real-time
+    db.collection("testData").orderBy("time", "desc").onSnapshot((querySnapshot) => {
+        const list = document.getElementById("dataList");
+        list.innerHTML = ""; // Clear existing list
+        
+        querySnapshot.forEach((doc) => {
+            const data = doc.data();
+            const listItem = document.createElement("li");
+            
+            // Format the time to make it readable
+            const timeString = data.time ? data.time.toDate().toLocaleString() : "Just now";
+            
+            listItem.textContent = data.message + " (Saved at: " + timeString + ")";
+            list.appendChild(listItem);
+        });
+    });
+
   } catch (err) {
     console.error("Firebase init error: ", err);
   }
