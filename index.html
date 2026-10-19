@@ -3103,5 +3103,43 @@ window.syncSettlementNotifications = syncSettlementNotifications;
 window.dismissNotification = dismissNotification;
 boot();
 </script>
+<!-- Firebase SDKs -->
+<script src="https://www.gstatic.com/firebasejs/10.1.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.1.0/firebase-firestore-compat.js"></script>
+
+<!-- Test Button (Positioned at bottom-right corner) -->
+<button onclick="testDatabase()" style="position: fixed; bottom: 20px; right: 20px; z-index: 99999; padding: 10px 16px; background-color: #2563eb; color: #ffffff; font-size: 14px; font-weight: 600; border: none; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); cursor: pointer;">Test Database</button>
+
+<script>
+  // 1. Replace with your actual Firebase project configuration
+  const firebaseConfig = {
+    apiKey: "AIzaSyDhDOiQ-bqtZmL7ltaV2xtDSPUMN9F-y8I",
+    authDomain: "ecommerce-report-35c12.firebaseapp.com",
+    projectId: "ecommerce-report-35c12",
+    storageBucket: "ecommerce-report-35c12.firebasestorage.app",
+    messagingSenderId: "152653940148",
+    appId: "1:152653940148:web:14fcd12aadb39783291ee1"
+  };
+
+  // 2. Initialize Firebase
+  try {
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    // 3. Function to test the database connection
+    window.testDatabase = function() {
+      db.collection("testData").add({
+          message: "Hello, the database is working!",
+          time: new Date()
+      }).then(() => {
+          alert("Success! Database connected successfully.");
+      }).catch((error) => {
+          alert("Error: " + error.message);
+      });
+    };
+  } catch (err) {
+    console.error("Firebase init error: ", err);
+  }
+</script>
 </body>
 </html>
